@@ -32,6 +32,17 @@ pythonw usage.pyw
 | 拖曳 | 移動位置 |
 | 右鍵 | 選單 |
 
+## 打包成 exe
+
+```powershell
+pip install pyinstaller pillow
+python make_icon.py          # 產生 usage.ico
+python -m PyInstaller --onefile --noconsole --name ClaudeUsageWidget --icon usage.ico `
+    --exclude-module PIL usage.pyw
+```
+
+輸出在 `dist\ClaudeUsageWidget.exe`（單一檔案、免安裝 Python）。
+
 ## 資料來源
 
 1. **`~/.ccburn/history.db`** 最新一筆（ccburn 執行中，或 statusline 掛了 `ccburn collect` 時會持續更新），每 5 秒讀取。
