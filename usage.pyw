@@ -7,7 +7,7 @@
 操作：
   拖曳        移動位置（會記住）
   單擊        打開 / 關閉詳細資訊
-  右鍵        選單：重新整理、移到角落、資料來源、結束
+  右鍵        選單：重新整理、精簡模式、移到角落、資料來源、結束
 設定存在 %APPDATA%\\ClaudeUsageWidget\\data.json
 """
 import ctypes
@@ -30,7 +30,7 @@ except Exception:
 
 DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ClaudeUsageWidget")
 DATA_FILE = os.path.join(DATA_DIR, "data.json")
-DEFAULTS = {"corner": "br", "pos": None}
+DEFAULTS = {"corner": "br", "pos": None, "compact": False}
 CORNERS = (("br", "右下角"), ("tr", "右上角"), ("bl", "左下角"), ("tl", "左上角"))
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")).expanduser()
@@ -224,7 +224,8 @@ class Widget:
         self.T = self.Si(64)
         self.GAP = self.Si(6)
         self.PILL_W = self.Si(188)
-        self.W, self.H = self.T + self.GAP + self.PILL_W, self.T
+        self.compact = bool(self.d.get("compact"))
+        self.W, self.H = self.size()
 
         root.title("Claude 用量")
         root.overrideredirect(True)
@@ -262,6 +263,10 @@ class Widget:
         self.poll()
         self.tick()
 
+    def size(self):
+        """精簡模式只留圓環，否則圓環 + 右/左側資訊條。"""
+        return (self.T if self.compact else self.T + self.GAP + self.PILL_W), self.T
+
     def S(self, v):
         return v * self.k
 
@@ -288,8 +293,17 @@ class Widget:
         self.side = "right" if self.tx + self.T / 2 > (l + r) / 2 else "left"
 
     def place(self):
-        wx = self.tx - self.GAP - self.PILL_W if self.side == "right" else self.tx
+        wx = self.tx - self.GAP - self.PILL_W if self.side == "right" and not self.compact else self.tx
         self.root.geometry(f"{self.W}x{self.H}+{int(wx)}+{int(self.ty)}")
+
+    def toggle_compact(self):
+        self.compact = not self.compact
+        self.d["compact"] = self.compact
+        save(self.d)
+        self.W, self.H = self.size()
+        self.cv.config(width=self.W, height=self.H)
+        self.place()
+        self.draw()
 
     def set_corner(self, cor):
         self.d["corner"], self.d["pos"] = cor, None
@@ -394,6 +408,8 @@ class Widget:
                       font=self.f_ring, fill="#2B2A33")
         c.create_text(cx, cy + S(12), text="5h 用量", font=self.f_tiny, fill="#6E6980")
 
+        if self.compact:
+            return
         x0 = 0 if self.side == "right" else self.T + self.GAP
         x1 = x0 + self.PILL_W
         y0, y1 = cy - S(24), cy + S(24)
@@ -437,6 +453,8 @@ class Widget:
         m = tk.Menu(self.root, tearoff=0, font=(FONT, 10))
         m.add_command(label="立即重新整理", command=lambda: self.poll(force=True))
         m.add_command(label=f"資料來源：{self.source}", state="disabled")
+        m.add_command(label="取消精簡模式" if self.compact else "精簡模式（只顯示圓環）",
+                      command=self.toggle_compact)
         pm = tk.Menu(m, tearoff=0, font=(FONT, 10))
         for key, name in CORNERS:
             pm.add_command(label=name, command=lambda k=key: self.set_corner(k))
