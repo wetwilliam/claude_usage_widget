@@ -341,7 +341,7 @@ class Widget:
         """先看 DB；太舊（或手動重新整理）就在背景打 API。"""
         got = read_db()
         now = datetime.now(timezone.utc)
-        if got and not force:
+        if got and not force and self.newer(got):
             self.snap, self.source, self.error = got, "ccburn", ""
         fresh = got is not None and (now - got[0]).total_seconds() < STALE_AFTER
         if (force or not fresh) and not self.fetching:
@@ -350,8 +350,12 @@ class Widget:
                 self.fetching = True
                 self.last_api = t
                 threading.Thread(target=self.fetch_api, args=(got,), daemon=True).start()
-        elif got and force:
+        elif got and force and self.newer(got):
             self.snap, self.source = got, "ccburn"
+
+    def newer(self, got):
+        """DB 資料比目前顯示的還新才採用，避免舊的 DB 值蓋掉剛抓到的 API 值。"""
+        return self.snap is None or got[0] > self.snap[0]
 
     def fetch_api(self, fallback):
         try:
