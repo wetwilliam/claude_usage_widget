@@ -1,8 +1,9 @@
-"""Claude 用量小浮窗 — 待在螢幕角落，隨時看 Claude Code 的 5 小時 / 每週用量。
+"""Claude 用量小浮窗 — 待在螢幕角落，隨時看 Claude Code 的 5 小時用量與 Grok Bot 每週用量。
 
 資料來源（做法參考 ccburn）：
   1. ~/.ccburn/history.db 最新一筆（ccburn 開著或 statusline 有掛 `ccburn collect` 時持續更新）
   2. 資料過舊時，自己呼叫 OAuth usage API（讀 ~/.claude/.credentials.json；429 時退避）
+  3. Grok Bot：Grok Bot 每 3 小時發布的 JSON（ntfy.sh 為主、sharehtml 備援），每 10 分鐘讀一次
 
 操作：
   拖曳        移動位置（會記住）
@@ -30,32 +31,39 @@ except Exception:
 
 DATA_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ClaudeUsageWidget")
 DATA_FILE = os.path.join(DATA_DIR, "data.json")
-DEFAULTS = {"corner": "br", "pos": None, "compact": False}
+DEFAULTS = {"corner": "br", "pos": None, "compact": True}
 CORNERS = (("br", "右下角"), ("tr", "右上角"), ("bl", "左下角"), ("tl", "左上角"))
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")).expanduser()
 CCBURN_DB = Path.home() / ".ccburn" / "history.db"
 API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_BETA = "oauth-2025-04-20"
+TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"   # Claude Code 的公開 OAuth client
 
 DB_POLL = 5            # 秒：讀 DB 的間隔
 STALE_AFTER = 300      # 秒：DB 資料超過這麼久就改打 API
 API_EVERY = 180        # 秒：打 API 的最短間隔
 API_BACKOFF = 600      # 秒：429 / 錯誤後的等待
 SESSION_SEC, WEEK_SEC = 5 * 3600, 7 * 86400
+GROK_URLS = ("https://ntfy.sh/gbu-69664633aeefa7555a3c221e/raw?poll=1&since=latest",
+             "https://7y3m3be.sharehtml.org/")   # 後者把 JSON 包在 <pre> 裡
+GROK_EVERY = 600       # 秒：讀 Grok Bot 用量的間隔（資料每 3 小時才更新）
 
 FONT = "Microsoft JhengHei UI"
 KEY = "#010203"
-PILL_BG = "#2B2A33"
-PILL_FG = "#FFFFFF"
-PILL_SUB = "#B9B6C4"
-RING_BG = "#E6E0F0"
-COOL, OK, HOT, DEAD = "#3DB89A", "#E8A33D", "#E5533D", "#BDB7C9"
+PILL_BG = "#262624"
+PILL_FG = "#FAF9F5"
+PILL_SUB = "#8C8A85"
+RING_FILL = "#1F1E1D"
+RING_BG = "#3A3734"
+CLAUDE, GROK = "#D97757", "#E6E6E6"
+COOL, OK, HOT, DEAD = "#C9A27E", "#D97757", "#B8391F", "#6B6862"
 IDLE_ALPHA = 0.75
-PANEL_BG = "#F7F5FB"
-PINK_INK = "#2B2A33"
-PANEL_SUB = "#8A8497"
-BAR_BG = "#E3DEEE"
+PANEL_BG = "#262624"
+PINK_INK = "#FAF9F5"
+PANEL_SUB = "#8C8A85"
+BAR_BG = "#3A3734"
 
 
 def load():
@@ -162,10 +170,31 @@ def read_history(since):
     return [(t, u) for t, u in out if t]
 
 
+def oauth_token():
+    """讀 Claude Code 的 access token；快過期就像 Claude Code 一樣用 refresh token 換新並寫回。"""
+    path = CLAUDE_DIR / ".credentials.json"
+    with open(path, encoding="utf-8") as f:
+        creds = json.load(f)
+    o = creds["claudeAiOauth"]
+    if o.get("refreshToken") and o.get("expiresAt", 0) / 1000 - time.time() < 300:
+        req = urllib.request.Request(TOKEN_URL, method="POST", headers={"Content-Type": "application/json", "User-Agent": "claude-cli"},
+                                     data=json.dumps({"grant_type": "refresh_token", "client_id": CLIENT_ID,
+                                                      "refresh_token": o["refreshToken"]}).encode())
+        with urllib.request.urlopen(req, timeout=15) as r:
+            t = json.loads(r.read())
+        o["accessToken"] = t["access_token"]
+        o["refreshToken"] = t.get("refresh_token", o["refreshToken"])
+        o["expiresAt"] = int((time.time() + t.get("expires_in", 3600)) * 1000)
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(creds, f)
+        os.replace(tmp, path)
+    return o["accessToken"]
+
+
 def read_api():
     """打 OAuth usage API。回傳 (資料時間, 同 read_db)；失敗丟例外。"""
-    with open(CLAUDE_DIR / ".credentials.json", encoding="utf-8") as f:
-        token = json.load(f)["claudeAiOauth"]["accessToken"]
+    token = oauth_token()
     req = urllib.request.Request(API_URL, headers={
         "Accept": "application/json", "Authorization": f"Bearer {token}",
         "anthropic-beta": API_BETA})
@@ -184,6 +213,20 @@ def read_api():
     if extra.get("is_enabled") and extra.get("utilization") is not None:
         snap["month"] = (extra["utilization"] / 100.0, None)
     return datetime.now(timezone.utc), snap
+
+
+def read_grok():
+    """Grok Bot 每週用量 → (使用率0~1, resets_at, 資料時間)；全部來源都失敗就丟最後一個例外。"""
+    err = None
+    for url in GROK_URLS:
+        try:
+            with urllib.request.urlopen(url, timeout=15) as r:
+                body = r.read().decode("utf-8")
+            d = json.loads(body[body.index("{"):body.rindex("}") + 1])
+            return d["used_pct"] / 100.0, parse_ts(d["resets_at"]), parse_ts(d["updated_at"])
+        except Exception as e:
+            err = e
+    raise err
 
 
 def pace_color(util, resets, window):
@@ -224,13 +267,17 @@ class Widget:
         self.T = self.Si(64)
         self.GAP = self.Si(6)
         self.PILL_W = self.Si(188)
+        self.RW = 2 * self.T + self.GAP   # 兩個圓環：Claude 5h、Grok Bot 每週
         self.compact = bool(self.d.get("compact"))
         self.W, self.H = self.size()
 
         root.title("Claude 用量")
         root.overrideredirect(True)
         root.attributes("-topmost", True)
-        root.attributes("-transparentcolor", KEY)
+        try:
+            root.attributes("-transparentcolor", KEY)   # 只有 Windows 支援
+        except tk.TclError:
+            pass
         root.attributes("-alpha", IDLE_ALPHA)
         root.configure(bg=KEY)
         self.cv = tk.Canvas(root, width=self.W, height=self.H, bg=KEY, highlightthickness=0)
@@ -250,6 +297,8 @@ class Widget:
         self.press = None
         self.dragging = False
         self.ticks = 0
+        self.grok = None          # (使用率, resets_at, 資料時間)
+        self.grok_error = ""
 
         c = self.cv
         c.bind("<Enter>", lambda e: root.attributes("-alpha", 1.0))
@@ -265,7 +314,7 @@ class Widget:
 
     def size(self):
         """精簡模式只留圓環，否則圓環 + 右/左側資訊條。"""
-        return (self.T if self.compact else self.T + self.GAP + self.PILL_W), self.T
+        return (self.RW if self.compact else self.RW + self.GAP + self.PILL_W), self.T
 
     def S(self, v):
         return v * self.k
@@ -277,12 +326,12 @@ class Widget:
     def place_initial(self):
         l, t, r, b = work_area(self.root)
         pos = self.d.get("pos")
-        if pos and l - self.T < pos[0] < r and t - self.T < pos[1] < b:
+        if pos and l - self.RW < pos[0] < r and t - self.T < pos[1] < b:
             self.tx, self.ty = pos
         else:
             m = self.Si(16)
             cor = self.d.get("corner", "br")
-            self.tx = r - self.T - m if "r" in cor else l + m
+            self.tx = r - self.RW - m if "r" in cor else l + m
             # 右下角預設再往上避開番茄鐘
             self.ty = b - self.T - m - (self.T + m if cor == "br" else 0) if "b" in cor else t + m
         self.update_side()
@@ -290,7 +339,7 @@ class Widget:
 
     def update_side(self):
         l, t, r, b = work_area(self.root)
-        self.side = "right" if self.tx + self.T / 2 > (l + r) / 2 else "left"
+        self.side = "right" if self.tx + self.RW / 2 > (l + r) / 2 else "left"
 
     def place(self):
         wx = self.tx - self.GAP - self.PILL_W if self.side == "right" and not self.compact else self.tx
@@ -353,6 +402,12 @@ class Widget:
         elif got and force and self.newer(got):
             self.snap, self.source = got, "ccburn"
 
+    def fetch_grok(self):
+        try:
+            self.grok, self.grok_error = read_grok(), ""
+        except Exception as e:
+            self.grok_error = f"Grok {type(e).__name__}"
+
     def newer(self, got):
         """DB 資料比目前顯示的還新才採用，避免舊的 DB 值蓋掉剛抓到的 API 值。"""
         return self.snap is None or got[0] > self.snap[0]
@@ -375,6 +430,8 @@ class Widget:
         self.ticks += 1
         if self.ticks % DB_POLL == 0:
             self.poll()
+        if self.ticks % GROK_EVERY == 1:
+            threading.Thread(target=self.fetch_grok, daemon=True).start()
         if self.ticks % 60 == 0:
             self.root.attributes("-topmost", True)
         self.draw()
@@ -383,6 +440,12 @@ class Widget:
     # ---------- 繪圖 ----------
     def metric(self, key, window):
         """→ (使用率|None, 剩餘秒|None, 顏色)；視窗已過期就視為歸零。"""
+        if key == "grok":
+            if not self.grok:
+                return None, None, DEAD
+            util, resets, _ = self.grok
+            left = (resets - datetime.now(timezone.utc)).total_seconds() if resets else None
+            return (0.0, None, GROK) if left is not None and left <= 0 else (util, left, GROK)
         if not self.snap:
             return None, None, DEAD
         util, resets = self.snap[1][key]
@@ -401,16 +464,10 @@ class Widget:
         su, sl, sc = self.metric("session", SESSION_SEC)
         wu, wl, wc = self.metric("week", WEEK_SEC)
 
-        ox = self.W - self.T if self.side == "right" else 0
-        cx, cy = ox + self.T / 2, self.T / 2
-        R = S(27)
-        c.create_oval(cx - R, cy - R, cx + R, cy + R, fill="#FFFFFF", outline=RING_BG, width=S(5))
-        if su:
-            c.create_arc(cx - R, cy - R, cx + R, cy + R, start=90,
-                         extent=-359.9 * min(1.0, su), style="arc", outline=sc, width=S(5))
-        c.create_text(cx, cy - S(3), text="--" if su is None else f"{round(su * 100)}%",
-                      font=self.f_ring, fill="#2B2A33")
-        c.create_text(cx, cy + S(12), text="5h 用量", font=self.f_tiny, fill="#6E6980")
+        ox = self.W - self.RW if self.side == "right" else 0
+        cy = self.T / 2
+        self.draw_ring(ox + self.T / 2, cy, su, CLAUDE, "Claude 5h")
+        self.draw_ring(ox + self.T + self.GAP + self.T / 2, cy, self.metric("grok", WEEK_SEC)[0], GROK, "Grok 週")
 
         if self.compact:
             return
@@ -426,6 +483,17 @@ class Widget:
         if status:
             c.create_text(x1 - pad, y1 + S(1), anchor="e", text=status,
                           font=self.f_small, fill=HOT if self.error else PILL_SUB)
+
+    def draw_ring(self, cx, cy, util, color, label):
+        c, S = self.cv, self.S
+        R = S(27)
+        c.create_oval(cx - R, cy - R, cx + R, cy + R, fill=RING_FILL, outline=RING_BG, width=S(5))
+        if util:
+            c.create_arc(cx - R, cy - R, cx + R, cy + R, start=90,
+                         extent=-359.9 * min(1.0, util), style="arc", outline=color, width=S(5))
+        c.create_text(cx, cy - S(3), text="--" if util is None else f"{round(util * 100)}%",
+                      font=self.f_ring, fill=PILL_FG)
+        c.create_text(cx, cy + S(12), text=label, font=self.f_tiny, fill=PILL_SUB)
 
     def draw_row(self, xa, xb, y, label, util, left, color):
         c, S = self.cv, self.S
@@ -444,10 +512,10 @@ class Widget:
     def status_text(self):
         """只在有問題時才顯示（錯誤 / 資料過舊 / 還沒有資料）。"""
         if self.snap is None:
-            return "查詢中…" if self.fetching else (self.error or "尚無資料")
+            return "查詢中…" if self.fetching else (self.error or self.grok_error or "尚無資料")
         age = (datetime.now(timezone.utc) - self.snap[0]).total_seconds()
-        if self.error:
-            return self.error
+        if self.error or self.grok_error:
+            return self.error or self.grok_error
         if age > 2 * STALE_AFTER:
             return f"資料 {fmt_left(age)} 前"
         return ""
@@ -455,7 +523,7 @@ class Widget:
     # ---------- 選單 ----------
     def show_menu(self, e):
         m = tk.Menu(self.root, tearoff=0, font=(FONT, 10))
-        m.add_command(label="立即重新整理", command=lambda: self.poll(force=True))
+        m.add_command(label="立即重新整理", command=self.refresh)
         m.add_command(label=f"資料來源：{self.source}", state="disabled")
         m.add_command(label="取消精簡模式" if self.compact else "精簡模式（只顯示圓環）",
                       command=self.toggle_compact)
@@ -466,6 +534,10 @@ class Widget:
         m.add_separator()
         m.add_command(label="結束", command=self.root.destroy)
         m.tk_popup(e.x_root, e.y_root)
+
+    def refresh(self):
+        self.poll(force=True)
+        threading.Thread(target=self.fetch_grok, daemon=True).start()
 
     def toggle_panel(self):
         if self.panel:
@@ -480,14 +552,17 @@ class Widget:
 class Panel:
     ROWS = (("session", "5 小時（Session）", SESSION_SEC), ("week", "每週（全部模型）", WEEK_SEC),
             ("sonnet", "每週 Sonnet", WEEK_SEC), ("opus", "每週 Opus", WEEK_SEC),
-            ("month", "月度額度", None))
+            ("month", "月度額度", None), ("grok", "Grok Bot 每週", WEEK_SEC))
 
     def __init__(self, app):
         self.app = app
         w = self.win = tk.Toplevel(app.root)
         w.title("Claude 用量 · 詳細")
         w.attributes("-topmost", True)
-        w.attributes("-toolwindow", True)
+        try:
+            w.attributes("-toolwindow", True)   # 只有 Windows 支援
+        except tk.TclError:
+            pass
         w.resizable(False, False)
         w.configure(bg=PANEL_BG)
         w.protocol("WM_DELETE_WINDOW", self.close)
@@ -510,14 +585,14 @@ class Panel:
         pw, ph = w.winfo_reqwidth(), w.winfo_reqheight()
         l, t, r, b = work_area(a.root)
         gap = a.Si(10)
-        x = a.tx + a.T - pw if a.side == "right" else a.tx
+        x = a.tx + a.RW - pw if a.side == "right" else a.tx
         y = a.ty - ph - gap - a.Si(32) if a.ty + a.T / 2 > (t + b) / 2 else a.ty + a.T + gap
         w.geometry(f"+{int(min(max(l, x), r - pw))}+{int(min(max(t, y), b - ph))}")
 
     def on_click(self, e):
         b = self.refresh_btn
         if b and b[0] <= e.x <= b[2] and b[1] <= e.y <= b[3]:
-            self.app.poll(force=True)
+            self.app.refresh()
 
     def draw(self):
         a, c, S = self.app, self.cv, self.app.S
@@ -536,7 +611,7 @@ class Panel:
             if util:
                 c.create_line(pad, by, pad + bw * min(1.0, util), by, fill=col, width=S(7),
                               capstyle="round")
-            resets = a.snap[1][key][1] if a.snap else None
+            resets = (a.grok[1] if a.grok else None) if key == "grok" else (a.snap[1][key][1] if a.snap else None)
             info = ""
             if resets is not None and left is not None:
                 info = f"重置 {resets.astimezone().strftime('%m/%d %H:%M')}（{fmt_left(left)} 後）"
@@ -556,7 +631,7 @@ class Panel:
         c.create_text(pad, y + S(4), anchor="w", text="本輪 5 小時走勢（虛線＝平均速度）",
                       font=ft(8), fill=PANEL_SUB)
         gx0, gx1, gy0, gy1 = pad, pad + bw, y + S(16), y + S(88)
-        c.create_rectangle(gx0, gy0, gx1, gy1, fill="white", outline=BAR_BG)
+        c.create_rectangle(gx0, gy0, gx1, gy1, fill=PANEL_BG, outline=BAR_BG)
         resets = a.snap[1]["session"][1] if a.snap else None
         if resets is not None and resets > datetime.now(timezone.utc):
             start = resets.timestamp() - SESSION_SEC
@@ -579,7 +654,7 @@ class Panel:
         c.create_text(pad, y + S(8), anchor="w", text=f"來源：{a.source}　{age}",
                       font=ft(8), fill=PANEL_SUB)
         bx1, bx0 = self.W - pad, self.W - pad - S(64)
-        c.create_rectangle(bx0, y - S(1), bx1, y + S(17), fill=PILL_BG, outline="")
+        c.create_rectangle(bx0, y - S(1), bx1, y + S(17), fill=CLAUDE, outline="")
         c.create_text((bx0 + bx1) / 2, y + S(8), text="重新整理", font=ft(8), fill="white")
         self.refresh_btn = (bx0, y - S(1), bx1, y + S(17))
         self.job = self.win.after(1000, self.draw)

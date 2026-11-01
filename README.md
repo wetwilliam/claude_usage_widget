@@ -7,7 +7,7 @@
 
 ## 功能
 
-- **圓環**：直接顯示 5 小時 Session 用量百分比，顏色代表用量速度（綠＝從容、橘＝正常、紅＝偏快）。
+- **兩個圓環**：左＝Claude 5 小時 Session 用量（橘），右＝Grok Bot 每週用量（白），深色底。
 - **小條**：5h / 7d 兩條用量與距離重置的倒數。
 - **單擊展開詳細資訊**：5 小時、每週（全部模型）、Sonnet、Opus、月度額度（有資料才顯示）、
   重置時間、用量速度與預估用完時間、本輪 5 小時走勢圖。
@@ -53,3 +53,5 @@ python -m PyInstaller --onefile --noconsole --name ClaudeUsageWidget --icon usag
 token 只用來呼叫上述 API，不會寫入任何檔案。設定（位置）存在 `%APPDATA%\ClaudeUsageWidget\data.json`。
 
 可用 `CLAUDE_CONFIG_DIR` 指定其他 Claude 設定資料夾。
+
+Grok Bot 用量讀自 Grok Bot 發布的 JSON（`GROK_URLS`：ntfy.sh 為主、sharehtml 備援），每 10 分鐘讀一次，不需要任何金鑰。
