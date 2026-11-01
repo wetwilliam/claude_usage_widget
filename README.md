@@ -54,4 +54,24 @@ token 只用來呼叫上述 API，不會寫入任何檔案。設定（位置）�
 
 可用 `CLAUDE_CONFIG_DIR` 指定其他 Claude 設定資料夾。
 
-Grok Bot 用量讀自 Grok Bot 發布的 JSON（`GROK_URLS`：ntfy.sh 為主、sharehtml 備援），每 10 分鐘讀一次，不需要任何金鑰。
+## Grok Bot 用量怎麼更新
+
+Grok Bot 沒有公開的用量 API，所以資料是「推送 → 讀取」兩段：
+
+1. **發布端（Grok Bot 例行工作）**：在 Grok Bot 裡建立一個每小時執行的 routine，讀取自己的 Grok 用量，
+   把下面的 JSON 發布到 ntfy.sh 的主題（主要）以及一個 sharehtml 頁面（備援）：
+
+   ```json
+   {"used_pct": 49.4, "resets_at": "2026-11-04T14:51:00Z", "updated_at": "2026-11-01T08:54:00Z"}
+   ```
+
+   - `used_pct`：本週已用百分比（0–100）
+   - `resets_at`：每週額度重置時間（ISO 8601）
+   - `updated_at`：這筆資料的產生時間
+
+2. **讀取端（本浮窗）**：每 10 分鐘依序嘗試 `GROK_URLS`，取第一個成功的；回應中第一個 `{` 到最後一個 `}`
+   會被當成 JSON 解析（所以 sharehtml 把 JSON 包在 HTML 裡也可以）。不需要任何金鑰。
+
+**自己使用時**：把 `usage.pyw` 裡的 `GROK_URLS` 換成你自己的 ntfy 主題（`https://ntfy.sh/<你的主題>/raw?poll=1&since=latest`）
+和備援網址，並讓你的 Grok Bot 依上面格式發布。ntfy 主題是公開的，知道名稱的人都能讀寫，請取一個難猜的名稱。
+資料最多延遲約 1 小時（發布頻率）＋ 10 分鐘（讀取間隔）。
