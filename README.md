@@ -3,7 +3,7 @@
 待在螢幕角落的 Claude Code 用量監控小工具，不用再特地打開終端機查用量。
 做法參考 [ccburn](https://github.com/JuanjoFuchs/ccburn)，浮窗操作沿用 `tomato_timer`。
 
-![截圖](docs/screenshot.png)
+![截圖](docs/screenshot-grok.png)
 
 ## 功能
 
