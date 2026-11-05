@@ -46,7 +46,8 @@ STALE_AFTER = 300      # 秒：DB 資料超過這麼久就改打 API
 API_EVERY = 180        # 秒：打 API 的最短間隔
 API_BACKOFF = 600      # 秒：429 / 錯誤後的等待
 SESSION_SEC, WEEK_SEC = 5 * 3600, 7 * 86400
-GROK_URLS = ("https://ntfy.sh/gbu-69664633aeefa7555a3c221e/raw?poll=1&since=latest",
+GROK_URLS = ("https://gist.githubusercontent.com/wetwilliam/7ec2d6f03fef261aac7fd0e187a5eef9/raw/usage.json",
+             "https://ntfy.sh/gbu-69664633aeefa7555a3c221e/raw?poll=1&since=latest",
              "https://7y3m3be.sharehtml.org/")   # 後者把 JSON 包在 <pre> 裡
 GROK_EVERY = 600       # 秒：讀 Grok Bot 用量的間隔（資料每 3 小時才更新）
 

@@ -59,7 +59,7 @@ token 只用來呼叫上述 API，不會寫入任何檔案。設定（位置）�
 Grok Bot 沒有公開的用量 API，所以資料是「推送 → 讀取」兩段：
 
 1. **發布端（Grok Bot 例行工作）**：在 Grok Bot 裡建立一個每小時執行的 routine，讀取自己的 Grok 用量，
-   把下面的 JSON 發布到 ntfy.sh 的主題（主要）以及一個 sharehtml 頁面（備援）：
+   把下面的 JSON 寫入一個 GitHub Gist（主要，用只開 gist 權限的 token），並發布到 ntfy.sh 主題與 sharehtml 頁面（備援）：
 
    ```json
    {"used_pct": 49.4, "resets_at": "2026-11-04T14:51:00Z", "updated_at": "2026-11-01T08:54:00Z"}
@@ -72,6 +72,6 @@ Grok Bot 沒有公開的用量 API，所以資料是「推送 → 讀取」兩�
 2. **讀取端（本浮窗）**：每 10 分鐘依序嘗試 `GROK_URLS`，取第一個成功的；回應中第一個 `{` 到最後一個 `}`
    會被當成 JSON 解析（所以 sharehtml 把 JSON 包在 HTML 裡也可以）。不需要任何金鑰。
 
-**自己使用時**：把 `usage.pyw` 裡的 `GROK_URLS` 換成你自己的 ntfy 主題（`https://ntfy.sh/<你的主題>/raw?poll=1&since=latest`）
-和備援網址，並讓你的 Grok Bot 依上面格式發布。ntfy 主題是公開的，知道名稱的人都能讀寫，請取一個難猜的名稱。
+**自己使用時**：把 `usage.pyw` 裡的 `GROK_URLS` 換成你自己的 Gist raw 網址（`https://gist.githubusercontent.com/<帳號>/<gist id>/raw/usage.json`）
+和備援網址（ntfy.sh 公用伺服器會依 IP 限流，常回 429，所以只當備援），並讓你的 Grok Bot 依上面格式發布。ntfy 主題是公開的，知道名稱的人都能讀寫，請取一個難猜的名稱。
 資料最多延遲約 1 小時（發布頻率）＋ 10 分鐘（讀取間隔）。
